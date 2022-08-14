@@ -12,6 +12,7 @@ import (
 func run() int {
 	var cellsWide, cellsHigh, erodeAmount int
 	var randomSeed int64
+	var showSolution bool
 	var outFilename string
 	flag.IntVar(&cellsWide, "cells_wide", 20,
 		"The width of the maze, in grid cells.")
@@ -21,6 +22,8 @@ func run() int {
 		"The amount by which to \"erode\" small walls.")
 	flag.Int64Var(&randomSeed, "random_seed", -1,
 		"If positive, specifies the random seed to use.")
+	flag.BoolVar(&showSolution, "show_solution", false,
+		"If set, shows the solution of the maze.")
 	flag.StringVar(&outFilename, "output_file", "",
 		"The name of the .png file to which the maze will be saved.")
 	flag.Parse()
@@ -49,6 +52,14 @@ func run() int {
 				fmt.Printf("Error eroding walls: %s\n", e)
 				return 1
 			}
+		}
+	}
+	if showSolution {
+		fmt.Printf("Finding solution to the maze.\n")
+		e = m.ShowSolution(true)
+		if e != nil {
+			fmt.Printf("Error finding solution: %s\n", e)
+			return 1
 		}
 	}
 	f, e := os.Create(outFilename)

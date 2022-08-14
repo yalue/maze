@@ -1,11 +1,11 @@
 // This defines a library for generating 2D mazes. Basic usage:
 //
-//	// Create a maze with a random seed (based on time)
-//	maze, _ := NewGridMaze(cellsWide, cellsHigh)
-//	// OPTIONAL: Regenerate the maze using a specific seed
-//	maze.RegenerateFromSeed(1337)
-//	// OPTIONAL: Highlight the solution to the maze
-//	maze.ShowSolution(true)
+//	  // Create a maze with a random seed (based on time)
+//	  maze, _ := NewGridMaze(cellsWide, cellsHigh)
+//	  // Alternative: Generate the maze using a specific seed
+//    // maze, _ := NewGridMazeWithSeed(cellsWide, cellsHigh, seed)
+//	  // OPTIONAL: Highlight the solution to the maze
+//	  maze.ShowSolution(true)
 //
 // The "maze" object satisfies the Maze interface, which includes go's
 // image.Image interface.
@@ -495,8 +495,211 @@ func (m *GridMaze) ErodeWalls() error {
 	return nil
 }
 
+// Used internally by ShowSolution.
+func setDirRanking(currentCol, currentRow, targetCol, targetRow int,
+	dirRanking []int) {
+	colDiff := targetCol - currentCol
+	absColDiff := colDiff
+	if absColDiff < 0 {
+		absColDiff = -absColDiff
+	}
+	rowDiff := targetRow - currentRow
+	absRowDiff := rowDiff
+	if absRowDiff < 0 {
+		absRowDiff = -absRowDiff
+	}
+	if absRowDiff > absColDiff {
+		// The row difference is bigger, so moving up or down is highest
+		// priority.
+		if rowDiff > 0 {
+			// Moving down is best, up is worst
+			dirRanking[0] = 3
+			dirRanking[3] = 1
+		} else {
+			// Moving up is best, down is worst
+			dirRanking[0] = 1
+			dirRanking[3] = 3
+		}
+		if colDiff > 0 {
+			// Moving right is better than left
+			dirRanking[1] = 2
+			dirRanking[2] = 0
+		} else {
+			// Moving left is better than right
+			dirRanking[1] = 0
+			dirRanking[2] = 2
+		}
+		return
+	}
+	// The highest priority is moving left or right
+	if colDiff > 0 {
+		// Moving right is best, left is worst
+		dirRanking[0] = 2
+		dirRanking[3] = 0
+	} else {
+		// Moving left is best, right is worst
+		dirRanking[0] = 0
+		dirRanking[3] = 2
+	}
+	if rowDiff > 0 {
+		// Moving down is better than up
+		dirRanking[1] = 3
+		dirRanking[2] = 1
+	} else {
+		// Moving up is better than down
+		dirRanking[1] = 1
+		dirRanking[2] = 3
+	}
+}
+
+// Used internally by ShowSolution.
+func (m *GridMaze) isReachableAndUnvisited(currentIndex, currentCol,
+	currentRow, moveDir int, visited []bool) (bool, int) {
+	if m.cells[currentIndex].walls[moveDir] {
+		return false, -1
+	}
+	dstIndex := currentIndex
+	switch moveDir {
+	case 0:
+		if currentCol == 0 {
+			return false, -1
+		}
+		dstIndex--
+	case 1:
+		if currentRow == 0 {
+			return false, -1
+		}
+		dstIndex -= m.width
+	case 2:
+		if currentCol == (m.width - 1) {
+			return false, -1
+		}
+		dstIndex++
+	case 3:
+		if currentRow == (m.height - 1) {
+			return false, -1
+		}
+		dstIndex += m.width
+	default:
+		panic("Bad direction.")
+	}
+	// We assume that cell walls were removed reciprocally, and we already
+	// checked that the currentCell does not have a wall in the relevant
+	// direction.
+	if visited[dstIndex] {
+		return false, -1
+	}
+	return true, dstIndex
+}
+
+func (m *GridMaze) clearSolution() error {
+	for i := range m.cells {
+		m.cells[i].selected = false
+	}
+	return nil
+}
+
 func (m *GridMaze) ShowSolution(show bool) error {
-	return fmt.Errorf("Showing the GridMaze solution is not yet supported")
+	// We perform basically a depth-first search here, prioritizing moving in
+	// whichever direction has the shortest manhattan distance to the target.
+	if !show {
+		return m.clearSolution()
+	}
+	var endRow, endCol int
+	endCol = m.endCellIndex % m.width
+	endRow = m.endCellIndex / m.width
+	visited := make([]bool, len(m.cells))
+	// These will be -1 to indicate either uninitialized or the end of the
+	// path.
+	parentIndices := make([]int, len(m.cells))
+	for i := range parentIndices {
+		parentIndices[i] = -1
+	}
+
+	// The initial capacity of this is arbitrary, but hopefully something big
+	// enough that it won't need to be reallocated.
+	dfsStack := make([]int, 0, len(m.cells)/2)
+	dfsStack = append(dfsStack, m.startCellIndex)
+	visited[m.startCellIndex] = true
+
+	// Will be filled with some permutation of the values 0 through 3, (left,
+	// up, right, down), where index 0 in this array is the best direction to
+	// move (minimum manhattan distance), and index 3 is the worst. Ties may be
+	// broken arbitrarily.
+	var dirRanking [4]int
+
+DFSLoop:
+	for {
+		// Select the next path starting-point from the top of the stack
+		if len(dfsStack) == 0 {
+			return fmt.Errorf("Internal error: failed to solve maze")
+		}
+		currentIndex := dfsStack[len(dfsStack)-1]
+		dfsStack = dfsStack[:len(dfsStack)-1]
+		currentCol := currentIndex % m.width
+		currentRow := currentIndex / m.width
+		if (currentRow == endRow) && (currentCol == endCol) {
+			// Solution found! The parentIndices have already been set.
+			break
+		}
+
+		// Follow the path as long as possible, minimizing manhattan distance
+		// at each step.
+		for {
+			setDirRanking(currentCol, currentRow, endCol, endRow,
+				dirRanking[:])
+			moveDir := -1
+			moveDst := -1
+			for _, v := range dirRanking {
+				okMove, dstIndex := m.isReachableAndUnvisited(currentIndex,
+					currentCol, currentRow, v, visited)
+				if !okMove {
+					continue
+				}
+				if moveDst == -1 {
+					// We found the next step in our move
+					moveDst = dstIndex
+					moveDir = v
+					continue
+				}
+				// We've found a valid direction, but we already have chosen
+				// our next step, so add it to the stack to test later.
+				visited[dstIndex] = true
+				parentIndices[dstIndex] = currentIndex
+				dfsStack = append(dfsStack, dstIndex)
+			}
+			if moveDst < 0 {
+				// Can't make any more moves along this path.
+				break
+			}
+			// Move to the destination index
+			visited[moveDst] = true
+			parentIndices[moveDst] = currentIndex
+			currentIndex = moveDst
+			switch moveDir {
+			case 0:
+				currentCol--
+			case 1:
+				currentRow--
+			case 2:
+				currentCol++
+			case 3:
+				currentRow++
+			}
+			if (currentRow == endRow) && (currentCol == endCol) {
+				break DFSLoop
+			}
+		}
+	}
+
+	// Highlight the path by following the chain of parent indices from the end
+	index := m.endCellIndex
+	for index >= 0 {
+		m.cells[index].selected = true
+		index = parentIndices[index]
+	}
+
+	return nil
 }
 
 func (m *GridMaze) GetInfo() string {
