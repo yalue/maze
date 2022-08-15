@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/yalue/maze"
+	"image"
 	"image/png"
 	"os"
 )
@@ -13,7 +14,7 @@ func run() int {
 	var cellsWide, cellsHigh, erodeAmount int
 	var randomSeed int64
 	var showSolution bool
-	var outFilename string
+	var outFilename, templateImage string
 	flag.IntVar(&cellsWide, "cells_wide", 20,
 		"The width of the maze, in grid cells.")
 	flag.IntVar(&cellsHigh, "cells_high", 20,
@@ -26,6 +27,9 @@ func run() int {
 		"If set, shows the solution of the maze.")
 	flag.StringVar(&outFilename, "output_file", "",
 		"The name of the .png file to which the maze will be saved.")
+	flag.StringVar(&templateImage, "template_image", "",
+		"An optional path to a PNG-format image to use as a layout "+
+			"template. Wil ignore cells_wide and cells_high if used.")
 	flag.Parse()
 	if (cellsWide < 1) || (cellsHigh < 1) || (outFilename == "") {
 		fmt.Println("Invalid or missing argument.")
@@ -34,10 +38,23 @@ func run() int {
 	}
 	var e error
 	var m *maze.GridMaze
-	if randomSeed > 0 {
-		m, e = maze.NewGridMazeWithSeed(cellsWide, cellsHigh, randomSeed)
+	if templateImage != "" {
+		f, e := os.Open(templateImage)
+		if e != nil {
+			fmt.Printf("Error opening template image %s: %s\n", templateImage,
+				e)
+			return 1
+		}
+		pic, _, e := image.Decode(f)
+		f.Close()
+		if e != nil {
+			fmt.Printf("Error parsing template image %s: %s\n", templateImage,
+				e)
+			return 1
+		}
+		m, e = maze.NewGridMazeFromTemplate(pic, randomSeed)
 	} else {
-		m, e = maze.NewGridMaze(cellsWide, cellsHigh)
+		m, e = maze.NewGridMazeWithSeed(cellsWide, cellsHigh, randomSeed)
 	}
 	if e != nil {
 		fmt.Printf("Failed generating maze: %s\n", e)

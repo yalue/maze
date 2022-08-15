@@ -1,14 +1,5 @@
-// This defines a library for generating 2D mazes. Basic usage:
-//
-//	  // Create a maze with a random seed (based on time)
-//	  maze, _ := NewGridMaze(cellsWide, cellsHigh)
-//	  // Alternative: Generate the maze using a specific seed
-//    // maze, _ := NewGridMazeWithSeed(cellsWide, cellsHigh, seed)
-//	  // OPTIONAL: Highlight the solution to the maze
-//	  maze.ShowSolution(true)
-//
-// The "maze" object satisfies the Maze interface, which includes go's
-// image.Image interface.
+// This defines a library for generating 2D mazes.  The generated mazes satisfy
+// the Maze interface, which includes go's image.Image interface.
 package maze
 
 import (
@@ -72,15 +63,30 @@ func (s *disjointSet) union(other *disjointSet) {
 // The number of pixels across, in a square cell. Must be at least 5.
 const cellPixels = 9
 
+// Differentiates between different types of cells, i.e. whether they are part
+// of the solution, or not part of the maze at all.
+type cellState uint8
+
+func (s cellState) String() string {
+	switch s {
+	case 0:
+		return "normal"
+	case 1:
+		return "solutionPath"
+	case 2:
+		return "excluded"
+	}
+	return fmt.Sprintf("Unknown cellState: %d", uint8(s))
+}
+
 // A single "cell" of the grid-based maze. Can be drawn as an image
 // individuallly.
 type gridMazeCell struct {
 	// Whether each of the cell's "walls" are present. The order is left, top,
 	// right, bottom. Each entry is true if the wall is there.
 	walls [4]bool
-	// True if the cell is "selected". This will color the middle pixels red if
-	// set. Used for drawing the solution.
-	selected bool
+	// Determines how the cell is drawn, and other stuff.
+	state cellState
 	// Used for the disjoint-set method of maze generation.
 	djSet *disjointSet
 }
@@ -109,6 +115,10 @@ func (c *gridMazeCell) cornerSet(n int) bool {
 func (c *gridMazeCell) At(x, y int) color.Color {
 	if (x < 0) || (y < 0) || (x >= cellPixels) || (y >= cellPixels) {
 		return color.Transparent
+	}
+	// "Excluded" cells are always going to be blank.
+	if c.state == 2 {
+		return color.White
 	}
 	if x == 0 {
 		if y == 0 {
@@ -168,7 +178,7 @@ func (c *gridMazeCell) At(x, y int) color.Color {
 	}
 	// At this point, we're not along any wall. First, everything is simply
 	// white if we're not "selected"
-	if !c.selected {
+	if c.state != 1 {
 		return color.White
 	}
 	// Selected cells are red, if more than two pixels away from an edge.
@@ -183,6 +193,8 @@ func (c *gridMazeCell) At(x, y int) color.Color {
 	return color.White
 }
 
+// Resets the given cell's disjoint set entry and sets all of its walls. Does
+// *not* change its cell state.
 func initGridMazeCell(c *gridMazeCell) {
 	c.djSet = newDisjointSet()
 	for i := range c.walls {
@@ -217,7 +229,8 @@ type GridMaze struct {
 	generationTime float64
 }
 
-func NewGridMazeWithSeed(width, height int, seed int64) (*GridMaze, error) {
+// Allocates but does not initialize any maze cell contents.
+func allocateMaze(width, height int) (*GridMaze, error) {
 	if (width < 1) || (height < 1) {
 		return nil, fmt.Errorf("width and height must be at least 1")
 	}
@@ -227,21 +240,155 @@ func NewGridMazeWithSeed(width, height int, seed int64) (*GridMaze, error) {
 		return nil, fmt.Errorf("The maze's size was too big")
 	}
 	toReturn := &GridMaze{
-		width:     int(width),
-		height:    int(height),
-		cells:     make([]gridMazeCell, cellCount),
-		neighbors: nil,
+		width:          int(width),
+		height:         int(height),
+		cells:          make([]gridMazeCell, cellCount),
+		startCellIndex: -1,
+		endCellIndex:   -1,
+		neighbors:      nil,
 	}
-	e := toReturn.RegenerateFromSeed(seed)
+	return toReturn, nil
+}
+
+// Generates a maze. If the given RNG seed is not positive, a new seed will be
+// selected based on the current time in nanoseconds.
+func NewGridMazeWithSeed(width, height int, seed int64) (*GridMaze, error) {
+	toReturn, e := allocateMaze(width, height)
+	if e != nil {
+		return nil, e
+	}
+	if seed <= 0 {
+		seed = time.Now().UnixNano()
+	}
+	e = toReturn.RegenerateFromSeed(seed)
 	if e != nil {
 		return nil, fmt.Errorf("Error generating maze: %w", e)
 	}
 	return toReturn, nil
 }
 
-// Returns a maze built out of square cells and a random seed.
-func NewGridMaze(width, height int) (*GridMaze, error) {
-	return NewGridMazeWithSeed(width, height, time.Now().UnixNano())
+// We'll convert template colors to values of this type.
+type templateCellType uint8
+
+func (t templateCellType) String() string {
+	switch t {
+	case 0:
+		return "valid"
+	case 1:
+		return "excluded"
+	case 2:
+		return "startCandidate"
+	case 3:
+		return "endCandidate"
+	}
+	return fmt.Sprintf("Invalid template cell type: %d", uint8(t))
+}
+
+// Converts an arbitrary color to what the type of cell represents. See the
+// comment on NewGridMazeFromTemplate for how the mapping works.
+func colorToTemplateCellType(c color.Color) templateCellType {
+	r, g, b, _ := c.RGBA()
+	r = r >> 8
+	g = g >> 8
+	b = b >> 8
+	// Black pixels represent excluded cells
+	if (r == 0) && (g == 0) && (b == 0) {
+		return 1
+	}
+	// Green pixels are possible starting cells
+	if (r == 0) && (g > 200) && (b == 0) {
+		return 2
+	}
+	// Red pixels are possible ending cells
+	if (r > 200) && (g == 0) && (b == 0) {
+		return 3
+	}
+	// White pixels are standard maze cells
+	if (r == 255) && (g == 255) && (b == 255) {
+		return 0
+	}
+	// All other colors are treated as standard for now
+	return 0
+}
+
+// Uses a "template" image to generate a maze. Each pixel in the template will
+// correspond to one cell in the maze. The given seed will be ignored if not
+// positive. The template image must use the following format:
+//   - Green pixels are possible starting points (RGB = 0, >200, 0)
+//   - Red pixels are possible ending points (RGB = >200, 0, 0)
+//   - Black pixels are excluded cells
+//   - White pixels are "normal" cells that will be part of the maze.
+//   - Any other color will be treated as "excluded" by default, but this is
+//     subject to change.
+func NewGridMazeFromTemplate(templatePic image.Image, seed int64) (*GridMaze,
+	error) {
+	bounds := templatePic.Bounds().Canon()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	toReturn, e := allocateMaze(width, height)
+	if e != nil {
+		return nil, e
+	}
+	if seed <= 0 {
+		seed = time.Now().UnixNano()
+	}
+
+	possibleStartIndices := make([]int, 0, 100)
+	possibleEndIndices := make([]int, 0, 100)
+	cellIndex := -1
+	for row := bounds.Min.Y; row < bounds.Max.Y; row++ {
+		for col := bounds.Min.X; col < bounds.Max.X; col++ {
+			cellIndex++
+			cellType := colorToTemplateCellType(templatePic.At(col, row))
+			switch cellType {
+			case 0:
+				// No need to do anything with standard cells
+				break
+			case 1:
+				// Type 1 = excluded cells
+				toReturn.cells[cellIndex].state = 2
+			case 2:
+				// Type 2 = possible start cell.
+				possibleStartIndices = append(possibleStartIndices, cellIndex)
+			case 3:
+				// Type 3 = possible end cell.
+				possibleEndIndices = append(possibleEndIndices, cellIndex)
+			default:
+				return nil, fmt.Errorf("Invalid template pixel type (%s)",
+					cellType)
+			}
+		}
+	}
+
+	rng := rand.New(rand.NewSource(seed))
+	if len(possibleStartIndices) != 0 {
+		toReturn.startCellIndex = possibleStartIndices[rng.Intn(
+			len(possibleStartIndices))]
+	} else {
+		if toReturn.cells[0].state == 2 {
+			return nil, fmt.Errorf("No possible start locations marked, and " +
+				"the top-left cell is excluded")
+		}
+		toReturn.startCellIndex = 0
+	}
+	if len(possibleEndIndices) != 0 {
+		toReturn.endCellIndex = possibleEndIndices[rng.Intn(
+			len(possibleEndIndices))]
+	} else {
+		if toReturn.cells[len(toReturn.cells)-1].state == 2 {
+			return nil, fmt.Errorf("No possible end locations marked, and " +
+				"the bottom-right cell is excluded")
+		}
+		toReturn.endCellIndex = len(toReturn.cells) - 1
+	}
+
+	// We've set up walls and chosen a start and end cell, so build the actual
+	// maze now.
+	e = toReturn.RegenerateFromSeed(seed)
+	if e != nil {
+		return nil, fmt.Errorf("Error generating maze: %w", e)
+	}
+	return toReturn, nil
 }
 
 // Initializes the list of neighbors that aren't connected yet. Must only be
@@ -264,8 +411,14 @@ func (m *GridMaze) initDisjointNeighbors() error {
 		rowStartIdx := row * m.width
 		for col := 0; col < m.width; col++ {
 			index := rowStartIdx + col
-			// Create an entry for the neighbor to the right
-			if col != (m.width - 1) {
+			// We don't consider an "excluded" cell to be a disjoint neighbor,
+			// because it will never be joined.
+			if m.cells[index].state == 2 {
+				continue
+			}
+			// Create an entry for the neighbor to the right, except if the
+			// neighbor is excluded.
+			if (col != (m.width - 1)) && (m.cells[index+1].state != 2) {
 				m.neighbors = append(m.neighbors, gridNeighborInfo{
 					baseIndex:         index,
 					neighborDirection: 2,
@@ -274,11 +427,14 @@ func (m *GridMaze) initDisjointNeighbors() error {
 			if row == (m.height - 1) {
 				continue
 			}
-			// Create an entry for the neighbor below
-			m.neighbors = append(m.neighbors, gridNeighborInfo{
-				baseIndex:         index,
-				neighborDirection: 3,
-			})
+			// Create an entry for the neighbor below, also making sure it
+			// isn't excluded.
+			if m.cells[index+m.width].state != 2 {
+				m.neighbors = append(m.neighbors, gridNeighborInfo{
+					baseIndex:         index,
+					neighborDirection: 3,
+				})
+			}
 		}
 	}
 	return nil
@@ -414,9 +570,12 @@ func (m *GridMaze) RegenerateFromSeed(seed int64) error {
 	}
 
 	m.generationTime = time.Since(startTime).Seconds()
-	// TODO: Randomly choose a start and end cell.
-	m.startCellIndex = 0
-	m.endCellIndex = len(m.cells) - 1
+	// Arbitrarily go from top right to bottom left if the start cell hasn't
+	// been set.
+	if m.startCellIndex == -1 {
+		m.startCellIndex = 0
+		m.endCellIndex = len(m.cells) - 1
+	}
 	return nil
 }
 
@@ -594,7 +753,10 @@ func (m *GridMaze) isReachableAndUnvisited(currentIndex, currentCol,
 
 func (m *GridMaze) clearSolution() error {
 	for i := range m.cells {
-		m.cells[i].selected = false
+		// Don't change the cells with an "excluded" state.
+		if m.cells[i].state == 1 {
+			m.cells[i].state = 0
+		}
 	}
 	return nil
 }
@@ -609,6 +771,13 @@ func (m *GridMaze) ShowSolution(show bool) error {
 	endCol = m.endCellIndex % m.width
 	endRow = m.endCellIndex / m.width
 	visited := make([]bool, len(m.cells))
+	// Mark "excluded" cells as visited, just so the solution path will never
+	// attempt to go through them.
+	for i := range visited {
+		if m.cells[i].state == 2 {
+			visited[i] = true
+		}
+	}
 	// These will be -1 to indicate either uninitialized or the end of the
 	// path.
 	parentIndices := make([]int, len(m.cells))
@@ -695,7 +864,7 @@ DFSLoop:
 	// Highlight the path by following the chain of parent indices from the end
 	index := m.endCellIndex
 	for index >= 0 {
-		m.cells[index].selected = true
+		m.cells[index].state = 1
 		index = parentIndices[index]
 	}
 
