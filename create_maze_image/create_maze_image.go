@@ -4,8 +4,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/yalue/image_utils"
 	"github.com/yalue/maze"
 	"image"
+	"image/color"
 	"image/png"
 	"os"
 )
@@ -85,7 +87,7 @@ func run() int {
 		return 1
 	}
 	defer f.Close()
-	e = png.Encode(f, maze.AddImageBorder(m, 5))
+	e = png.Encode(f, image_utils.AddImageBorder(m, color.White, 5))
 	if e != nil {
 		fmt.Printf("Error writing image to %s: %s\n", outFilename, e)
 		return 1
