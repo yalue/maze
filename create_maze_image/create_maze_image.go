@@ -62,7 +62,8 @@ func run() int {
 		fmt.Printf("Failed generating maze: %s\n", e)
 		return 1
 	}
-	fmt.Printf("Generated %s OK.\n", m.GetInfo())
+	tmp := m.GetInfo()
+	fmt.Printf("Generated %s OK.\n", tmp.DebugInfo)
 	if erodeAmount > 0 {
 		fmt.Printf("Eroding maze walls %d steps.\n", erodeAmount)
 		for i := 0; i < erodeAmount; i++ {

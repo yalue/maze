@@ -19,7 +19,22 @@ type Maze interface {
 	ShowSolution(show bool) error
 	// Returns a human-readable string about that maze, for providing debug
 	// info such as the last set random seed.
-	GetInfo() string
+	GetInfo() *MazeInfo
+}
+
+type MazeInfo struct {
+	// The point at which the maze starts. May be on the maze boundary.
+	StartPoint image.Point
+	// The direction to "face" when starting the maze. Used for drawing start
+	// arrows. Will be negative if a start arrow shouldn't be drawn.
+	StartAngle float32
+	// The point at which the maze ends. May be on the maze boundary.
+	EndPoint image.Point
+	// The direction to "face" when exiting the maze. Used for drawing end
+	// arrows. Will be negative if an end arrow shouldn't be drawn.
+	EndAngle float32
+	// Contains information about the maze.
+	DebugInfo string
 }
 
 // Implements the disjoint set data structure from CLRS.
@@ -79,12 +94,20 @@ func (s cellState) String() string {
 	return fmt.Sprintf("Unknown cellState: %d", uint8(s))
 }
 
+func (s cellState) excluded() bool {
+	return s == 2
+}
+
 // A single "cell" of the grid-based maze. Can be drawn as an image
 // individuallly.
 type gridMazeCell struct {
 	// Whether each of the cell's "walls" are present. The order is left, top,
 	// right, bottom. Each entry is true if the wall is there.
 	walls [4]bool
+	// The index of the cell in the parent maze.
+	cellIndex int
+	// The maze containing this cell
+	parent *GridMaze
 	// Determines how the cell is drawn, and other stuff.
 	state cellState
 	// Used for the disjoint-set method of maze generation.
@@ -116,10 +139,12 @@ func (c *gridMazeCell) At(x, y int) color.Color {
 	if (x < 0) || (y < 0) || (x >= cellPixels) || (y >= cellPixels) {
 		return color.Transparent
 	}
-	// "Excluded" cells are always going to be blank.
-	if c.state == 2 {
+	// "Excluded" cells are always going to be blank, unless they're next to an
+	// end cell.
+	if c.state.excluded() {
 		return color.White
 	}
+
 	if x == 0 {
 		if y == 0 {
 			// Top left corner is clear only if it has no adjacent walls
@@ -195,7 +220,9 @@ func (c *gridMazeCell) At(x, y int) color.Color {
 
 // Resets the given cell's disjoint set entry and sets all of its walls. Does
 // *not* change its cell state.
-func initGridMazeCell(c *gridMazeCell) {
+func initGridMazeCell(c *gridMazeCell, cellIndex int, parent *GridMaze) {
+	c.parent = parent
+	c.cellIndex = cellIndex
 	c.djSet = newDisjointSet()
 	for i := range c.walls {
 		c.walls[i] = true
@@ -365,7 +392,7 @@ func NewGridMazeFromTemplate(templatePic image.Image, seed int64) (*GridMaze,
 		toReturn.startCellIndex = possibleStartIndices[rng.Intn(
 			len(possibleStartIndices))]
 	} else {
-		if toReturn.cells[0].state == 2 {
+		if toReturn.cells[0].state.excluded() {
 			return nil, fmt.Errorf("No possible start locations marked, and " +
 				"the top-left cell is excluded")
 		}
@@ -375,7 +402,7 @@ func NewGridMazeFromTemplate(templatePic image.Image, seed int64) (*GridMaze,
 		toReturn.endCellIndex = possibleEndIndices[rng.Intn(
 			len(possibleEndIndices))]
 	} else {
-		if toReturn.cells[len(toReturn.cells)-1].state == 2 {
+		if toReturn.cells[len(toReturn.cells)-1].state.excluded() {
 			return nil, fmt.Errorf("No possible end locations marked, and " +
 				"the bottom-right cell is excluded")
 		}
@@ -413,7 +440,7 @@ func (m *GridMaze) initDisjointNeighbors() error {
 			index := rowStartIdx + col
 			// We don't consider an "excluded" cell to be a disjoint neighbor,
 			// because it will never be joined.
-			if m.cells[index].state == 2 {
+			if m.cells[index].state.excluded() {
 				continue
 			}
 			// Create an entry for the neighbor to the right, except if the
@@ -532,7 +559,7 @@ func (m *GridMaze) getDisjointNeighbor(rng *rand.Rand) (*gridNeighborInfo,
 
 func (m *GridMaze) RegenerateFromSeed(seed int64) error {
 	for i := range m.cells {
-		initGridMazeCell(&(m.cells[i]))
+		initGridMazeCell(&(m.cells[i]), i, m)
 	}
 	e := m.initDisjointNeighbors()
 	if e != nil {
@@ -774,7 +801,7 @@ func (m *GridMaze) ShowSolution(show bool) error {
 	// Mark "excluded" cells as visited, just so the solution path will never
 	// attempt to go through them.
 	for i := range visited {
-		if m.cells[i].state == 2 {
+		if m.cells[i].state.excluded() {
 			visited[i] = true
 		}
 	}
@@ -871,9 +898,105 @@ DFSLoop:
 	return nil
 }
 
-func (m *GridMaze) GetInfo() string {
-	return fmt.Sprintf("%dx%d grid maze with randon seed %d, generated in "+
+// Used for processing either the start cell or end cell in the maze. If the
+// cell at the given index is on the maze boundary, this knocks down a wall and
+// returns the location of the wall (where the arrow should be pointing) and a
+// direction for the arrow to point.  (If the cell is an end cell, the caller
+// must make the arrow point in the opposite direction, with its tail at the
+// returned point.)  Also knocks down the wall of the cell if needed. Returns a
+// negative angle if the start point is not adjacent to an excluded cell or the
+// maze border.
+func (m *GridMaze) processEndpointCell(cellIndex int) (image.Point, float32) {
+	col := cellIndex % m.width
+	row := cellIndex / m.width
+	halfCell := cellPixels / 2
+	rowMidPixel := row*cellPixels + halfCell
+	colMidPixel := col*cellPixels + halfCell
+	// Is the cell on the left border?
+	if col == 0 {
+		pt := image.Pt(0, rowMidPixel)
+		// Remove the cell's left wall
+		m.cells[cellIndex].walls[0] = false
+		return pt, 0.0
+	}
+	// Right border?
+	if col == (m.width - 1) {
+		pt := image.Pt(m.width*cellPixels-1, rowMidPixel)
+		// Remove the cell's right wall
+		m.cells[cellIndex].walls[2] = false
+		return pt, 180.0
+	}
+	// Top border?
+	if row == 0 {
+		pt := image.Pt(colMidPixel, 0)
+		m.cells[cellIndex].walls[1] = false
+		return pt, 270.0
+	}
+	// Bottom border?
+	if row == (m.height - 1) {
+		pt := image.Pt(colMidPixel, m.height*cellPixels-1)
+		m.cells[cellIndex].walls[3] = false
+		return pt, 90.0
+	}
+
+	// At this point, the cell is not on a border, so instead start checking
+	// whether it's adjacent to excluded cells. (Note that at this point the
+	// cell is already guaranteed to have neighbors in all four directions, as
+	// otherwise it would have been on the maze border.) Start with the left
+	// neighbor.
+	neighbor := m.cells[cellIndex-1]
+	if neighbor.state.excluded() {
+		pt := image.Pt(cellPixels*col, rowMidPixel)
+		m.cells[cellIndex].walls[0] = false
+		return pt, 0.0
+	}
+	// Right neighbor
+	neighbor = m.cells[cellIndex+1]
+	if neighbor.state.excluded() {
+		pt := image.Pt(cellPixels*(col+1)-1, rowMidPixel)
+		m.cells[cellIndex].walls[2] = false
+		return pt, 180.0
+	}
+	// Above neighbor
+	neighbor = m.cells[cellIndex-m.width]
+	if neighbor.state.excluded() {
+		pt := image.Pt(colMidPixel, cellPixels*row)
+		m.cells[cellIndex].walls[1] = false
+		return pt, 270.0
+	}
+	// Below neighbor
+	neighbor = m.cells[cellIndex+m.width]
+	if neighbor.state.excluded() {
+		pt := image.Pt(colMidPixel, cellPixels*(row+1)-1)
+		m.cells[cellIndex].walls[3] = false
+		return pt, 90.0
+	}
+
+	// We aren't on the border at all, set the start/end point to the middle of
+	// the cell and return an arbitrary negative angle.
+	return image.Pt(colMidPixel, rowMidPixel), -123.0
+}
+
+func (m *GridMaze) GetInfo() *MazeInfo {
+	s := fmt.Sprintf("%dx%d grid maze with randon seed %d, generated in "+
 		"%.03f seconds", m.width, m.height, m.randomSeed, m.generationTime)
+	startPt, startDir := m.processEndpointCell(m.startCellIndex)
+	endPt, endDir := m.processEndpointCell(m.endCellIndex)
+	if endDir >= 0 {
+		// Need to flip the endDir without making it negative.
+		if endDir >= 180.0 {
+			endDir -= 180.0
+		} else {
+			endDir += 180.0
+		}
+	}
+	return &MazeInfo{
+		StartPoint: startPt,
+		StartAngle: startDir,
+		EndPoint:   endPt,
+		EndAngle:   endDir,
+		DebugInfo:  s,
+	}
 }
 
 // Returns the cell at the row and column.
