@@ -75,9 +75,6 @@ func (s *disjointSet) union(other *disjointSet) {
 	}
 }
 
-// The number of pixels across, in a square cell. Must be at least 5.
-const cellPixels = 9
-
 // Differentiates between different types of cells, i.e. whether they are part
 // of the solution, or not part of the maze at all.
 type cellState uint8
@@ -119,6 +116,7 @@ func (c *gridMazeCell) ColorModel() color.Model {
 }
 
 func (c *gridMazeCell) Bounds() image.Rectangle {
+	cellPixels := c.parent.cellPixels
 	return image.Rect(0, 0, cellPixels, cellPixels)
 }
 
@@ -136,6 +134,7 @@ func (c *gridMazeCell) cornerSet(n int) bool {
 }
 
 func (c *gridMazeCell) At(x, y int) color.Color {
+	cellPixels := c.parent.cellPixels
 	if (x < 0) || (y < 0) || (x >= cellPixels) || (y >= cellPixels) {
 		return color.Transparent
 	}
@@ -243,7 +242,9 @@ type GridMaze struct {
 	// Width and height are numbers of cells
 	width  int
 	height int
-	cells  []gridMazeCell
+	// The height and width of a cell, in pixels. Must be at least 5.
+	cellPixels int
+	cells      []gridMazeCell
 	// The indices of the start and end cells in the maze.
 	startCellIndex int
 	endCellIndex   int
@@ -270,6 +271,7 @@ func allocateMaze(width, height int) (*GridMaze, error) {
 		width:          int(width),
 		height:         int(height),
 		cells:          make([]gridMazeCell, cellCount),
+		cellPixels:     9,
 		startCellIndex: -1,
 		endCellIndex:   -1,
 		neighbors:      nil,
@@ -292,6 +294,15 @@ func NewGridMazeWithSeed(width, height int, seed int64) (*GridMaze, error) {
 		return nil, fmt.Errorf("Error generating maze: %w", e)
 	}
 	return toReturn, nil
+}
+
+// Sets the width of a single cell in the maze, in pixels. Must be at least 5.
+func (m *GridMaze) SetCellPixels(v int) error {
+	if v < 5 {
+		return fmt.Errorf("Cell width in pixels must be at least 5")
+	}
+	m.cellPixels = v
+	return nil
 }
 
 // We'll convert template colors to values of this type.
@@ -909,6 +920,7 @@ DFSLoop:
 func (m *GridMaze) processEndpointCell(cellIndex int) (image.Point, float32) {
 	col := cellIndex % m.width
 	row := cellIndex / m.width
+	cellPixels := m.cellPixels
 	halfCell := cellPixels / 2
 	rowMidPixel := row*cellPixels + halfCell
 	colMidPixel := col*cellPixels + halfCell
@@ -1009,10 +1021,12 @@ func (m *GridMaze) ColorModel() color.Model {
 }
 
 func (m *GridMaze) Bounds() image.Rectangle {
+	cellPixels := m.cellPixels
 	return image.Rect(0, 0, m.width*cellPixels, m.height*cellPixels)
 }
 
 func (m *GridMaze) At(x, y int) color.Color {
+	cellPixels := m.cellPixels
 	if (x < 0) || (y < 0) || (x >= m.width*cellPixels) ||
 		(y >= m.height*cellPixels) {
 		return color.Transparent
