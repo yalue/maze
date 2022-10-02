@@ -17,6 +17,9 @@ type Maze interface {
 	image.Image
 	RegenerateFromSeed(seed int64) error
 	ShowSolution(show bool) error
+	// Returns true if the given point is within the reachable path of the
+	// maze, and false if it's outside the maze or in an unreachable spot.
+	InMaze(x, y int) bool
 	// Returns a human-readable string about that maze, for providing debug
 	// info such as the last set random seed.
 	GetInfo() *MazeInfo
@@ -297,7 +300,7 @@ func NewGridMazeWithSeed(width, height int, seed int64) (*GridMaze, error) {
 }
 
 // Sets the width of a single cell in the maze, in pixels. Must be at least 5.
-func (m *GridMaze) SetCellPixels(v int) error {
+func (m *GridMaze) SetCellPixelsWide(v int) error {
 	if v < 5 {
 		return fmt.Errorf("Cell width in pixels must be at least 5")
 	}
@@ -1013,7 +1016,7 @@ func (m *GridMaze) GetInfo() *MazeInfo {
 
 // Returns the cell at the row and column.
 func (m *GridMaze) getCell(col, row int) *gridMazeCell {
-	return &(m.cells[col*m.width+row])
+	return &(m.cells[row*m.width+col])
 }
 
 func (m *GridMaze) ColorModel() color.Model {
@@ -1033,9 +1036,21 @@ func (m *GridMaze) At(x, y int) color.Color {
 	}
 	// We delegate drawing of each pixel to the At() function for the cell it
 	// falls into.
-	row := x / cellPixels
-	rowOffset := x % cellPixels
-	col := y / cellPixels
-	colOffset := y % cellPixels
-	return m.getCell(col, row).At(rowOffset, colOffset)
+	col := x / cellPixels
+	colOffset := x % cellPixels
+	row := y / cellPixels
+	rowOffset := y % cellPixels
+	return m.getCell(col, row).At(colOffset, rowOffset)
+}
+
+func (m *GridMaze) InMaze(x, y int) bool {
+	cellPixels := m.cellPixels
+	if (x < 0) || (y < 0) || (x >= m.width*cellPixels) ||
+		(y >= m.height*cellPixels) {
+		return false
+	}
+	col := x / cellPixels
+	row := y / cellPixels
+	c := m.getCell(col, row)
+	return c.state.excluded()
 }

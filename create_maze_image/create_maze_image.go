@@ -12,7 +12,7 @@ import (
 	"os"
 )
 
-const arrowLength = 16
+var arrowLength int = 16
 
 // Returns 0 = left, 1 = up, 2 = right, and 3 = down. The given angle must be
 // between 0 and 360, if it isn't this will simply return 2.
@@ -131,7 +131,7 @@ func drawMazeDecorations(m maze.Maze) (*image.RGBA, error) {
 }
 
 func run() int {
-	var cellsWide, cellsHigh, erodeAmount int
+	var cellWidth, cellsWide, cellsHigh, erodeAmount int
 	var randomSeed int64
 	var showSolution bool
 	var outFilename, templateImage string
@@ -139,6 +139,8 @@ func run() int {
 		"The width of the maze, in grid cells.")
 	flag.IntVar(&cellsHigh, "cells_high", 20,
 		"The height of the maze, in grid cells.")
+	flag.IntVar(&cellWidth, "cell_width", 11,
+		"The width of each maze cell, in pixels.")
 	flag.IntVar(&erodeAmount, "erode_amount", 0,
 		"The amount by which to \"erode\" small walls.")
 	flag.Int64Var(&randomSeed, "random_seed", -1,
@@ -199,6 +201,16 @@ func run() int {
 			fmt.Printf("Error finding solution: %s\n", e)
 			return 1
 		}
+	}
+	e = m.SetCellPixelsWide(cellWidth)
+	if e != nil {
+		fmt.Printf("Error setting maze cell width: %s\n", e)
+		return 1
+	}
+	// Arbitrarily make sure arrows don't get to be less than half the width of
+	// a cell.
+	if (cellWidth / 2) > arrowLength {
+		arrowLength = (cellWidth / 2)
 	}
 	finalPic, e := drawMazeDecorations(m)
 	if e != nil {
