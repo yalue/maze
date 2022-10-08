@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"time"
 )
 
 var arrowLength int = 16
@@ -126,12 +127,66 @@ func drawMazeDecorations(m maze.Maze) (*image.RGBA, error) {
 		return nil, fmt.Errorf("Error adding end arrow: %w", e)
 	}
 
+	// TODO (next): Add clipart at start and/or end
+	//  - Use image_utils.GetRectangleWalker to check the bounding box for the
+	//    start and end images. (Can also use image_utils.DrawWalker to draw
+	//    the rectangle as a temporary placeholder image for testing.)
+	//  - When it works, also commit the chnages for image_utils.
+
 	toReturn := image_utils.ToRGBA(decorated)
 	return toReturn, nil
 }
 
+// Used when generating a meta-maze, to ensure the top-left and bottom-right
+// corners are clear to serve as start and end cells.
+func clearImageCorners(pic image.Image) *image.RGBA {
+	toReturn := image_utils.ToRGBA(pic)
+	// Top left corner
+	for y := 0; y < 2; y++ {
+		for x := 0; x < 2; x++ {
+			toReturn.Set(x, y, color.White)
+		}
+	}
+	// Bottom right corner
+	m := toReturn.Bounds().Max
+	for y := m.Y - 3; y < m.Y; y++ {
+		for x := m.X - 3; x < m.X; x++ {
+			toReturn.Set(x, y, color.White)
+		}
+	}
+	return toReturn
+}
+
+// Generates a "meta" maze; a maze using another maze as a template.
+func generateMetaMaze(level int, randomSeed int64) (maze.Maze, error) {
+	if level <= 0 {
+		return nil, fmt.Errorf("Invalid meta-maze level: %d", level)
+	}
+	// We'll do seeding differently here, since we'll need a new seed for each
+	// level.
+	if randomSeed < 0 {
+		randomSeed = time.Now().UnixNano()
+	}
+	m, e := maze.NewGridMazeWithSeed(8, 8, randomSeed)
+	if e != nil {
+		return nil, e
+	}
+	for i := 0; i < level; i++ {
+		e = m.SetCellPixelsWide(7)
+		if e != nil {
+			return nil, e
+		}
+		tmp := clearImageCorners(m)
+		m, e = maze.NewGridMazeFromTemplate(tmp, randomSeed+int64(i))
+		if e != nil {
+			return nil, e
+		}
+	}
+	return m, nil
+}
+
 func run() int {
-	var cellWidth, cellsWide, cellsHigh, erodeAmount int
+	var cellWidth, cellsWide, cellsHigh, erodeAmount, metaMaze int
 	var randomSeed int64
 	var showSolution bool
 	var outFilename, templateImage string
@@ -147,6 +202,9 @@ func run() int {
 		"If positive, specifies the random seed to use.")
 	flag.BoolVar(&showSolution, "show_solution", false,
 		"If set, shows the solution of the maze.")
+	flag.IntVar(&metaMaze, "meta_maze", 0,
+		"If positive, does a \"meta\" maze. Ignores width specifications."+
+			" If used, keep the value low.")
 	flag.StringVar(&outFilename, "output_file", "",
 		"The name of the .png file to which the maze will be saved.")
 	flag.StringVar(&templateImage, "template_image", "",
@@ -175,6 +233,12 @@ func run() int {
 			return 1
 		}
 		m, e = maze.NewGridMazeFromTemplate(pic, randomSeed)
+	} else if metaMaze > 0 {
+		var tmp maze.Maze
+		tmp, e = generateMetaMaze(metaMaze, randomSeed)
+		if e == nil {
+			m = tmp.(*maze.GridMaze)
+		}
 	} else {
 		m, e = maze.NewGridMazeWithSeed(cellsWide, cellsHigh, randomSeed)
 	}

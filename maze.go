@@ -144,7 +144,8 @@ func (c *gridMazeCell) At(x, y int) color.Color {
 	// "Excluded" cells are always going to be blank, unless they're next to an
 	// end cell.
 	if c.state.excluded() {
-		return color.White
+		return color.Black
+		//return color.White
 	}
 
 	if x == 0 {
@@ -208,16 +209,13 @@ func (c *gridMazeCell) At(x, y int) color.Color {
 	if c.state != 1 {
 		return color.White
 	}
-	// Selected cells are red, if more than two pixels away from an edge.
-	if (x > 1) && (x < (cellPixels - 2)) && (y > 1) && (y < (cellPixels - 2)) {
-		return color.RGBA{
-			R: 230,
-			G: 20,
-			B: 20,
-			A: 255,
-		}
+	// Selected cells are red.
+	return color.RGBA{
+		R: 230,
+		G: 20,
+		B: 20,
+		A: 255,
 	}
-	return color.White
 }
 
 // Resets the given cell's disjoint set entry and sets all of its walls. Does
